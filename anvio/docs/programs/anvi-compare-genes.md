@@ -11,6 +11,12 @@ This program iterates through every pair of genes in a given %(contigs-db)s and 
 
 The program is useful for identifying genes with similar sequence contexts, which can be an indicator of horizontal gene transfer or conserved genomic neighborhoods.
 
+### Overcoming the SQLite k-mer limit
+
+Standard anvi'o programs (like `anvi-gen-contigs-database`) use a "wide" table format where every k-mer is a column. Because SQLite has a limit of 2,000 columns, these programs are typically limited to $k=5$.
+
+**anvi-compare-genes** bypasses this limit by using an optimized "side-car" caching strategy. It does not create new columns in your %(contigs-db)s. Instead, it computes k-mers in memory and can optionally store them in a separate sparse SQLite database via the `--cache-file` flag. This allows you to use k-mer sizes up to **$k=13$** (and beyond) without hitting database limitations.
+
 ## Usage
 
 {{ codestart }}
@@ -18,6 +24,17 @@ anvi-compare-genes -c %(contigs-db)s \
                    -o results.txt \
                    --kmer-size 4 \
                    --flank-length 100
+{{ codestop }}
+
+### Using a Cache File
+
+For large k-mer sizes (e.g., $k=13$) or large metagenomes, k-mer tokenization can be slow. You can use a cache file to store these pre-computed sets for future runs:
+
+{{ codestart }}
+anvi-compare-genes -c %(contigs-db)s \
+                   -o results.txt \
+                   --kmer-size 13 \
+                   --cache-file my_kmers.cache
 {{ codestop }}
 
 The output is a TAB-delimited file containing the following columns:
@@ -33,4 +50,4 @@ The output is a TAB-delimited file containing the following columns:
 
 - For genes on the reverse strand, the program correctly identifies the 5' (upstream) and 3' (downstream) ends and reverse-complements them before comparison.
 - If a gene is too close to the start or end of a contig, the flanking regions will be truncated accordingly.
-- The complexity of this program is O(N^2) where N is the number of genes. For large databases, this may take a significant amount of time.
+- The complexity of this program is O(N^2) where N is the number of genes. For large databases, this may take a significant amount of time. Use `--num-threads` to speed up the process.

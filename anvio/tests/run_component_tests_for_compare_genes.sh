@@ -38,7 +38,7 @@ fi
 
 # Check header (tabs)
 header=$(head -n 1 results.txt)
-expected_header="gene_callers_id_1	gene_callers_id_2	gene_similarity	upstream_similarity	downstream_similarity	combined_flank_similarity"
+expected_header="gene_callers_id_1	gene_callers_id_2	gene_similarity	upstream_similarity	downstream_similarity	combined_flank_similarity	annotations_1	annotations_2"
 if [ "$header" != "$expected_header" ]; then
     echo "ERROR: Header mismatch"
     echo "Got:      $header"
