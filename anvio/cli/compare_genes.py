@@ -29,13 +29,15 @@ __description__ = ("Compares all genes in a contigs database using k-mer/Jaccard
 # Global variables for workers
 gene_data_global = None
 gene_ids_global = None
+min_similarity_global = 0.0
 
 
-def init_worker(data, ids):
+def init_worker(data, ids, min_sim):
     """Initialize worker process with shared data."""
-    global gene_data_global, gene_ids_global
+    global gene_data_global, gene_ids_global, min_similarity_global
     gene_data_global = data
     gene_ids_global = ids
+    min_similarity_global = min_sim
 
 
 def jaccard_similarity_sets(set1, set2):
@@ -44,17 +46,27 @@ def jaccard_similarity_sets(set1, set2):
     union = len(set1 | set2)
     return inter / union if union > 0 else 0.0
 
-
 def worker(i_idx):
     """Worker function to compute similarities for one gene against all subsequent genes."""
     gid1 = gene_ids_global[i_idx]
     data1 = gene_data_global[gid1]
     results = []
 
+    # Get threshold from shared state if possible, or assume 0
+    # For simplicity, pass it as part of init_worker if needed.
+    # Here we'll assume a global threshold 'min_similarity_global'
+    global min_similarity_global
+
     for j in range(i_idx + 1, len(gene_ids_global)):
         gid2 = gene_ids_global[j]
         data2 = gene_data_global[gid2]
 
+        # MinHash Filter
+        if min_similarity_global > 0:
+            if minhash_jaccard(data1['sketch'], data2['sketch']) < min_similarity_global:
+                continue
+
+        # Compute similarities using pre-computed sets
         gene_sim = jaccard_similarity_sets(data1['gene_kmers'], data2['gene_kmers'])
         up_sim = jaccard_similarity_sets(data1['upstream_kmers'], data2['upstream_kmers'])
         down_sim = jaccard_similarity_sets(data1['downstream_kmers'], data2['downstream_kmers'])
@@ -65,11 +77,31 @@ def worker(i_idx):
     return results
 
 
+
+import hashlib
+
 def get_kmers(seq, k):
     """Extract k-mer set from a sequence."""
     if len(seq) < k:
         return set()
     return {hash(seq[i:i+k]) for i in range(len(seq) - k + 1)}
+
+
+def get_minhash_sketch(kmers, num_hashes=100):
+    """Create a MinHash sketch from a set of k-mers."""
+    hashes = []
+    for kmer in kmers:
+        h = int(hashlib.md5(str(kmer).encode()).hexdigest(), 16)
+        hashes.append(h)
+    hashes.sort()
+    return set(hashes[:num_hashes])
+
+
+def minhash_jaccard(sketch1, sketch2):
+    """Estimate Jaccard similarity using MinHash sketches."""
+    inter = len(sketch1 & sketch2)
+    union = len(sketch1 | sketch2)
+    return inter / union if union > 0 else 0.0
 
 
 def main():
@@ -99,9 +131,16 @@ def main():
         c.init_functions()
 
         # Get gene IDs
-        gene_ids = sorted(list(c.genes_in_contigs_dict.keys()))
+        if args.gene_caller_ids:
+            if not os.path.exists(args.gene_caller_ids):
+                raise ConfigError(f"Gene caller IDs file not found: {args.gene_caller_ids}")
+            with open(args.gene_caller_ids, 'r') as f:
+                gene_ids = sorted([int(line.strip()) for line in f if line.strip()])
+        else:
+            gene_ids = sorted(list(c.genes_in_contigs_dict.keys()))
+
         if not gene_ids:
-            raise ConfigError("No genes found in the contigs database.")
+            raise ConfigError("No genes found in the contigs database or provided list.")
 
         # Handle Caching
         gene_data = {}
@@ -154,7 +193,8 @@ def main():
                     'gene_kmers': get_kmers(g_seq, kmer_size),
                     'upstream_kmers': get_kmers(upstream_seq, kmer_size),
                     'downstream_kmers': get_kmers(downstream_seq, kmer_size),
-                    'combined_kmers': get_kmers(upstream_seq + downstream_seq, kmer_size)
+                    'combined_kmers': get_kmers(upstream_seq + downstream_seq, kmer_size),
+                    'sketch': get_minhash_sketch(get_kmers(g_seq, kmer_size))
                 }
                 gene_data[gid] = data
                 if cache_file:
@@ -175,7 +215,7 @@ def main():
             total_pairs = total_genes * (total_genes - 1) // 2
             progress.new('Computing gene similarities', progress_total_items=total_pairs)
 
-            pool = multiprocessing.Pool(processes=num_threads, initializer=init_worker, initargs=(gene_data, gene_ids))
+            pool = multiprocessing.Pool(processes=num_threads, initializer=init_worker, initargs=(gene_data, gene_ids, args.min_similarity))
             
             count = 0
             # We use imap_unordered for better memory efficiency and responsiveness
@@ -226,7 +266,9 @@ def get_args():
     parser.add_argument(*anvio.A('kmer-size'), **anvio.K('kmer-size', {'type': int, 'default': 3}))
     parser.add_argument(*anvio.A('flank-length'), **anvio.K('flank-length', {'type': int, 'default': 500}))
     parser.add_argument(*anvio.A('num-threads'), **anvio.K('num-threads', {'type': int, 'default': 1}))
+    parser.add_argument('--gene-caller-ids', help='Path to a file containing a list of gene caller IDs (one per line).')
     parser.add_argument('--cache-file', help='Optional SQLite file to cache k-mer sets.')
+    parser.add_argument('--min-similarity', type=float, default=0.0, help='MinHash Jaccard similarity threshold for filtering gene pairs. Recommended: 0.1-0.3.')
     return parser.get_args(parser)
 
 
