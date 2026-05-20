@@ -46,19 +46,17 @@ def jaccard_similarity_sets(set1, set2):
     union = len(set1 | set2)
     return inter / union if union > 0 else 0.0
 
-def worker(i_idx):
-    """Worker function to compute similarities for one gene against all subsequent genes."""
-    gid1 = gene_ids_global[i_idx]
+def worker(i_idx, group_gene_ids=None):
+    """Worker function to compute similarities for one gene against all subsequent genes in a group."""
+    target_gene_ids = group_gene_ids if group_gene_ids is not None else gene_ids_global
+    gid1 = target_gene_ids[i_idx]
     data1 = gene_data_global[gid1]
     results = []
 
-    # Get threshold from shared state if possible, or assume 0
-    # For simplicity, pass it as part of init_worker if needed.
-    # Here we'll assume a global threshold 'min_similarity_global'
     global min_similarity_global
 
-    for j in range(i_idx + 1, len(gene_ids_global)):
-        gid2 = gene_ids_global[j]
+    for j in range(i_idx + 1, len(target_gene_ids)):
+        gid2 = target_gene_ids[j]
         data2 = gene_data_global[gid2]
 
         # MinHash Filter
@@ -75,7 +73,6 @@ def worker(i_idx):
         results.append((gid1, gid2, gene_sim, up_sim, down_sim, comb_sim))
 
     return results
-
 
 
 import hashlib
@@ -117,17 +114,32 @@ def main():
     flank_length = A('flank_length') or 500
     num_threads = A('num_threads') or 1
     cache_file = A('cache_file')
+    annotation_source = A('compare_by_annotation_source')
 
     try:
         if not contigs_db_path:
             raise ConfigError("You must provide a contigs database.")
+
+        # Use ContigsSuperclass for high-level access
+        c = ContigsSuperclass(args)
+
+        if args.list_annotation_sources:
+            annotation_sources = c.db.get_meta_value('gene_function_sources')
+            if not annotation_sources:
+                raise ConfigError("This contigs database does not have any functional annotations :/")
+            
+            run.warning('', 'FUNCTIONAL ANNOTATION SOURCE%s FOUND' % ('S' if len(annotation_sources) > 1 else ''), lc='yellow')
+            for annotation_source in annotation_sources:
+                if annotation_source == annotation_sources[-1]:
+                    run.info_single('%s' % annotation_source, nl_after=1)
+                else:
+                    run.info_single('%s' % annotation_source)
+            sys.exit(0)
+
         if not output_path:
             raise ConfigError("You must provide an output file path.")
 
         filesnpaths.is_output_file_writable(output_path)
-
-        # Use ContigsSuperclass for high-level access
-        c = ContigsSuperclass(args)
         c.init_functions()
 
         # Get gene IDs
@@ -141,6 +153,26 @@ def main():
 
         if not gene_ids:
             raise ConfigError("No genes found in the contigs database or provided list.")
+
+        # If annotation_source is provided, group genes by their annotation
+        gene_groups = []
+        if annotation_source:
+            run.info("Grouping genes by source", annotation_source)
+            groups = {}
+            for gid in gene_ids:
+                if gid in c.gene_function_calls_dict and annotation_source in c.gene_function_calls_dict[gid]:
+                    # f[1] is the function text
+                    fn_name = c.gene_function_calls_dict[gid][annotation_source][1]
+                    if fn_name not in groups:
+                        groups[fn_name] = []
+                    groups[fn_name].append(gid)
+
+            gene_groups = [sorted(g) for g in groups.values() if len(g) > 1]
+            total_pairs = sum(len(g) * (len(g) - 1) // 2 for g in gene_groups)
+            run.info("Total pairs to compare", f"{total_pairs:,} (grouped into {len(gene_groups)} functional categories)")
+        else:
+            gene_groups = [gene_ids]
+            total_pairs = len(gene_ids) * (len(gene_ids) - 1) // 2
 
         # Handle Caching
         gene_data = {}
@@ -156,11 +188,13 @@ def main():
                 if row and int(row[0]) != kmer_size:
                     conn.close()
                     raise ConfigError(f"Cache file {cache_file} was created with k={row[0]}, but you requested k={kmer_size}.")
-                
+
                 cursor.execute("SELECT gene_callers_id, data FROM kmers")
                 for gid, blob in cursor.fetchall():
-                    gene_data[gid] = pickle.loads(blob)
-                    cached_gids.add(gid)
+                    # Only load what we need for this run
+                    if gid in gene_ids:
+                        gene_data[gid] = pickle.loads(blob)
+                        cached_gids.add(gid)
             else:
                 cursor.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
                 cursor.execute("CREATE TABLE kmers (gene_callers_id INTEGER PRIMARY KEY, data BLOB)")
@@ -168,7 +202,7 @@ def main():
                 conn.commit()
 
         gids_to_compute = [gid for gid in gene_ids if gid not in cached_gids]
-        
+
         if gids_to_compute:
             _, gene_seqs = c.get_sequences_for_gene_callers_ids(gene_caller_ids_list=gids_to_compute,
                                                                 flank_length=0)
@@ -189,21 +223,22 @@ def main():
                     upstream_seq = ""
                     downstream_seq = ""
 
+                kmers = get_kmers(g_seq, kmer_size)
                 data = {
-                    'gene_kmers': get_kmers(g_seq, kmer_size),
+                    'gene_kmers': kmers,
                     'upstream_kmers': get_kmers(upstream_seq, kmer_size),
                     'downstream_kmers': get_kmers(downstream_seq, kmer_size),
                     'combined_kmers': get_kmers(upstream_seq + downstream_seq, kmer_size),
-                    'sketch': get_minhash_sketch(get_kmers(g_seq, kmer_size))
+                    'sketch': get_minhash_sketch(kmers)
                 }
                 gene_data[gid] = data
                 if cache_file:
                     new_data_to_cache.append((gid, pickle.dumps(data)))
-            
+
             if cache_file and new_data_to_cache:
                 cursor.executemany("INSERT INTO kmers VALUES (?, ?)", new_data_to_cache)
                 conn.commit()
-        
+
         if cache_file:
             conn.close()
 
@@ -211,34 +246,48 @@ def main():
         with open(output_path, 'w') as outf:
             outf.write("gene_callers_id_1\tgene_callers_id_2\tgene_similarity\tupstream_similarity\tdownstream_similarity\tcombined_flank_similarity\tannotations_1\tannotations_2\n")
 
-            total_genes = len(gene_ids)
-            total_pairs = total_genes * (total_genes - 1) // 2
             progress.new('Computing gene similarities', progress_total_items=total_pairs)
 
             pool = multiprocessing.Pool(processes=num_threads, initializer=init_worker, initargs=(gene_data, gene_ids, args.min_similarity))
-            
+
             count = 0
-            # We use imap_unordered for better memory efficiency and responsiveness
-            for results in pool.imap_unordered(worker, range(total_genes)):
-                for gid1, gid2, g_sim, u_sim, d_sim, c_sim in results:
-                    # Get annotations
-                    ann1 = "; ".join([f"{s}:{f[0]}" for s, f in c.gene_function_calls_dict.get(gid1, {}).items() if f])
-                    ann2 = "; ".join([f"{s}:{f[0]}" for s, f in c.gene_function_calls_dict.get(gid2, {}).items() if f])
+            for group in gene_groups:
+                num_genes_in_group = len(group)
+                # Use partial to pass group specific data to worker
+                # Actually imap needs a single iterable. 
+                # We can map over the group indices.
+                from functools import partial
+                worker_with_group = partial(worker, group_gene_ids=group)
 
-                    outf.write(f"{gid1}\t{gid2}\t{g_sim:.6f}\t{u_sim:.6f}\t{d_sim:.6f}\t{c_sim:.6f}\t{ann1}\t{ann2}\n")
+                for results in pool.imap_unordered(worker_with_group, range(num_genes_in_group)):
+                    for gid1, gid2, g_sim, u_sim, d_sim, c_sim in results:
+                        # Get annotations - f[1] is function text
+                        ann1_list = []
+                        if gid1 in c.gene_function_calls_dict:
+                            for s, f in c.gene_function_calls_dict[gid1].items():
+                                if f and f[1]:
+                                    ann1_list.append(f"{s}:{f[1]}")
+                        ann1 = "; ".join(ann1_list)
 
-                    count += 1
-                    progress.increment()
-                    if count % 1000 == 0:
-                        progress.update(f'Compared {count} pairs')
+                        ann2_list = []
+                        if gid2 in c.gene_function_calls_dict:
+                            for s, f in c.gene_function_calls_dict[gid2].items():
+                                if f and f[1]:
+                                    ann2_list.append(f"{s}:{f[1]}")
+                        ann2 = "; ".join(ann2_list)
 
+                        outf.write(f"{gid1}\t{gid2}\t{g_sim:.6f}\t{u_sim:.6f}\t{d_sim:.6f}\t{c_sim:.6f}\t{ann1}\t{ann2}\n")
+
+                        count += 1
+                        progress.increment()
+                        if count % 1000 == 0:
+                            progress.update(f'Compared {count} pairs')
             progress.end()
             pool.close()
             pool.join()
 
 
         run.info('Comparison completed', f'Results written to {output_path}')
-
     except ConfigError as e:
         progress.end()
         run.warning(str(e))
@@ -269,6 +318,8 @@ def get_args():
     parser.add_argument('--gene-caller-ids', help='Path to a file containing a list of gene caller IDs (one per line).')
     parser.add_argument('--cache-file', help='Optional SQLite file to cache k-mer sets.')
     parser.add_argument('--min-similarity', type=float, default=0.0, help='MinHash Jaccard similarity threshold for filtering gene pairs. Recommended: 0.1-0.3.')
+    parser.add_argument('--compare-by-annotation-source', help='Optionally compare only genes that have the same annotation in this source (e.g. COG20_FUNCTION).')
+    parser.add_argument('--list-annotation-sources', action='store_true', default=False, help='List available functional annotation sources and quit.')
     return parser.get_args(parser)
 
 
