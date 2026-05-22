@@ -4155,6 +4155,12 @@ D = {
             {'default': False,
              'action': 'store_true',
              'help': "Use this flag to report all C/R estimates, from all domains."}
+    ),
+    'export-genbank': (
+            ['--export-genbank'],
+            {'default': False,
+             'action': 'store_true',
+             'help': "Export the results in GenBank format."}
     )
 }
 

@@ -87,6 +87,7 @@ def get_args():
                                        or one FASTA per match (see --separate-fasta)")
     groupD.add_argument(*anvio.A('output-dir'), **anvio.K('output-dir'))
     groupD.add_argument(*anvio.A('output-file-prefix'), **anvio.K('output-file-prefix', {'required': True}))
+    groupD.add_argument(*anvio.A('export-genbank'), **anvio.K('export-genbank'))
 
     # Additional
     groupE = parser.add_argument_group('ADDITIONAL STUFF', "Flags and parameters you can set according to your need")

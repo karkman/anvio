@@ -10,6 +10,9 @@ import string
 import argparse
 
 from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio.SeqFeature import SeqFeature, FeatureLocation
 from collections import OrderedDict
 
 import anvio
@@ -1017,3 +1020,103 @@ class GenbankToAnvio:
         return {'external_gene_calls': self.output_gene_calls_path,
                 'gene_functional_annotation': self.output_functions_path,
                 'path': self.output_fasta_path}
+
+class ExportGenbank:
+    """A class to export contigs and their features from an anvi'o contigs database as a GenBank file."""
+
+    def __init__(self, args, contigs_superclass=None, run=terminal.Run(), progress=terminal.Progress()):
+        self.args = args
+        self.run = run
+        self.progress = progress
+
+        A = lambda x: self.args.__dict__[x] if x in self.args.__dict__ else None
+        self.output_file_path = A('output_file') or A('output_genbank')
+        
+        self.annotation_sources = A('annotation_sources')
+        if self.annotation_sources and isinstance(self.annotation_sources, str):
+            self.annotation_sources = [s.strip() for s in self.annotation_sources.split(',')]
+
+        if contigs_superclass:
+            self.c = contigs_superclass
+        else:
+            from anvio.dbops import ContigsSuperclass
+            self.c = ContigsSuperclass(args)
+
+
+    def export(self):
+        self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
+        
+        # Initialize functions for all genes of interest
+        self.c.init_functions(requested_sources=self.annotation_sources)
+        
+        # We also need amino acid sequences if available
+        self.c.init_gene_amino_acid_sequences()
+
+        records = []
+        for contig_name in sorted(list(self.c.contig_sequences.keys())):
+            sequence = self.c.contig_sequences[contig_name]
+            self.progress.update(f'Processing {contig_name} ...')
+            
+            record = SeqRecord(Seq(sequence), id=contig_name, name=contig_name[:16], description="")
+            # GenBank 'name' is limited to 16 chars usually, but id can be longer.
+            
+            if contig_name in self.c.contig_name_to_genes:
+                # Sort genes by start position
+                genes = sorted(list(self.c.contig_name_to_genes[contig_name]), key=lambda x: x[1])
+                for gene_caller_id, start, stop in genes:
+                    gene_info = self.c.genes_in_contigs_dict[gene_caller_id]
+                    
+                    strand = 1 if gene_info['direction'] == 'f' else -1
+                    # anvi'o uses 0-based indexing. Biopython FeatureLocation also uses 0-based.
+                    location = FeatureLocation(start, stop, strand=strand)
+                    
+                    # Map call_type back to GenBank feature types
+                    source = gene_info['source']
+                    if source == 'Transfer_RNAs':
+                        feature_type = 'tRNA'
+                    elif source == 'Ribosomal_RNAs':
+                        feature_type = 'rRNA'
+                    elif gene_info['call_type'] == constants.gene_call_types['CODING']:
+                        feature_type = 'CDS'
+                    else:
+                        feature_type = 'misc_feature'
+                    
+                    qualifiers = OrderedDict()
+                    qualifiers['locus_tag'] = [f"gene_{gene_caller_id}"]
+                    qualifiers['gene_callers_id'] = [str(gene_caller_id)]
+                    
+                    # Add functional annotations
+                    if gene_caller_id in self.c.gene_function_calls_dict:
+                        for src, hits in self.c.gene_function_calls_dict[gene_caller_id].items():
+                            # hits is (accession, function, e_value)
+                            if hits:
+                                qualifiers[f'note_{src}'] = [f"{hits[0]}: {hits[1]}"]
+                                if 'product' not in qualifiers:
+                                    qualifiers['product'] = [hits[1]]
+                                if 'db_xref' not in qualifiers:
+                                    qualifiers['db_xref'] = []
+                                qualifiers['db_xref'].append(f"{src}:{hits[0]}")
+
+                    # Add amino acid sequence if it's a CDS and we have it
+                    if feature_type == 'CDS' and gene_caller_id in self.c.gene_amino_acid_sequences:
+                        aa_seq = self.c.gene_amino_acid_sequences[gene_caller_id]
+                        if aa_seq:
+                            qualifiers['translation'] = [aa_seq]
+
+                    feature = SeqFeature(location, type=feature_type, qualifiers=qualifiers)
+                    record.features.append(feature)
+            
+            records.append(record)
+            self.progress.increment()
+            
+        self.progress.end()
+        
+        # Add metadata to records if possible (e.g. project name)
+        project_name = self.c.a_meta.get('project_name', 'anvio_export')
+        for record in records:
+            record.annotations["source"] = project_name
+            record.annotations["data_file_division"] = "BCT" # default to Bacteria
+
+        self.run.info('Writing GenBank file', self.output_file_path)
+        with open(self.output_file_path, "w") as output_handle:
+            SeqIO.write(records, output_handle, "genbank")
