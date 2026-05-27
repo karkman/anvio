@@ -1328,6 +1328,7 @@ class LocusSplitter:
                                               output_file=locus_genbank_path,
                                               annotation_sources=self.annotation_sources)
             ExportGenbank(args_genbank, run=self.run_object, progress=self.progress_object).export()
+            self.run.info("Output GenBank file", locus_genbank_path)
 
         ############################################################################################
         # REMOVE TEMP FILES

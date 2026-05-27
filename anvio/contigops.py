@@ -1024,10 +1024,10 @@ class GenbankToAnvio:
 class ExportGenbank:
     """A class to export contigs and their features from an anvi'o contigs database as a GenBank file."""
 
-    def __init__(self, args, contigs_superclass=None, run=terminal.Run(), progress=terminal.Progress()):
+    def __init__(self, args, contigs_superclass=None, run=None, progress=None):
         self.args = args
-        self.run = run
-        self.progress = progress
+        self.run = run if run else terminal.Run()
+        self.progress = progress if progress else terminal.Progress()
 
         A = lambda x: self.args.__dict__[x] if x in self.args.__dict__ else None
         self.output_file_path = A('output_file') or A('output_genbank')
@@ -1040,25 +1040,37 @@ class ExportGenbank:
             self.c = contigs_superclass
         else:
             from anvio.dbops import ContigsSuperclass
-            self.c = ContigsSuperclass(args)
+            self.c = ContigsSuperclass(args, r=self.run, p=self.progress)
 
 
     def export(self):
+        # Initialize contig sequences if not already done
+        if not self.c.contig_sequences:
+            self.c.init_contig_sequences()
+
+        if not self.c.contig_sequences:
+            raise ConfigError("No contig sequences were loaded from the database :/")
+
         self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
         
         # Initialize functions for all genes of interest
         self.c.init_functions(requested_sources=self.annotation_sources)
         
-        # We also need amino acid sequences if available
-        self.c.init_gene_amino_acid_sequences()
+        # Get amino acid sequences if available
+        gene_ids = list(self.c.genes_in_contigs_dict.keys())
+        aa_sequences = self.c.get_gene_amino_acid_sequence(gene_ids)
 
         records = []
         for contig_name in sorted(list(self.c.contig_sequences.keys())):
-            sequence = self.c.contig_sequences[contig_name]
+            sequence_data = self.c.contig_sequences[contig_name]
+            sequence_string = sequence_data['sequence']
+            
             self.progress.update(f'Processing {contig_name} ...')
             
-            record = SeqRecord(Seq(sequence), id=contig_name, name=contig_name[:16], description="")
-            # GenBank 'name' is limited to 16 chars usually, but id can be longer.
+            # Create Seq object and SeqRecord
+            seq_obj = Seq(sequence_string)
+            record = SeqRecord(seq_obj, id=contig_name, name=contig_name[:16], description="")
+            record.annotations["molecule_type"] = "DNA"
             
             if contig_name in self.c.contig_name_to_genes:
                 # Sort genes by start position
@@ -1098,8 +1110,8 @@ class ExportGenbank:
                                 qualifiers['db_xref'].append(f"{src}:{hits[0]}")
 
                     # Add amino acid sequence if it's a CDS and we have it
-                    if feature_type == 'CDS' and gene_caller_id in self.c.gene_amino_acid_sequences:
-                        aa_seq = self.c.gene_amino_acid_sequences[gene_caller_id]
+                    if feature_type == 'CDS' and gene_caller_id in aa_sequences:
+                        aa_seq = aa_sequences[gene_caller_id]
                         if aa_seq:
                             qualifiers['translation'] = [aa_seq]
 

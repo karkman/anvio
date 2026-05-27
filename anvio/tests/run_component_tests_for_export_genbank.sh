@@ -66,7 +66,7 @@ INFO "Importing functions"
 anvi-import-functions -c MOCK.db -i MOCK-external-functions.txt
 
 INFO "Running anvi-export-genbank"
-anvi-export-genbank -c MOCK.db -o exported.gbk
+anvi-export-genbank -c MOCK.db -o exported.gbk --debug
 
 INFO "Checking exported GenBank file"
 if [ ! -f exported.gbk ]; then
