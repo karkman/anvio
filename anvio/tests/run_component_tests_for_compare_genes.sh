@@ -18,9 +18,13 @@ anvi-gen-contigs-database -f $files_dir/contigs.fa \
                           --no-progress \
                           $thread_controller
 
-INFO "Running anvi-compare-genes"
+INFO "Extracting gene caller IDs from the database"
+sqlite3 CONTIGS.db "SELECT gene_callers_id FROM genes_in_contigs ORDER BY gene_callers_id;" > gene_ids.txt
+
+INFO "Running anvi-compare-genes with gene caller IDs"
 anvi-compare-genes -c CONTIGS.db \
                    -o results.txt \
+                   --gene-caller-ids gene_ids.txt \
                    --kmer-size 4 \
                    --flank-length 100 \
                    $thread_controller
@@ -38,7 +42,7 @@ fi
 
 # Check header (tabs)
 header=$(head -n 1 results.txt)
-expected_header="gene_callers_id_1	gene_callers_id_2	gene_similarity	upstream_similarity	downstream_similarity	combined_flank_similarity	annotations_1	annotations_2"
+expected_header="gene_callers_id_1	gene_callers_id_2	gene_similarity	upstream_similarity	downstream_similarity	combined_flank_similarity	annotation"
 if [ "$header" != "$expected_header" ]; then
     echo "ERROR: Header mismatch"
     echo "Got:      $header"

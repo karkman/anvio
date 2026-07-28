@@ -58,6 +58,19 @@ There are four ways to indicate the desired anchor gene:
                       --search-term "Glycosyltransferase involved in cell wall bisynthesis","Acyl carrier protein" \
     {{ codestop }}
 
+### Exporting in GenBank format
+
+You can also export your loci as GenBank files by using the `--export-genbank` flag. This will create a `.gbk` file for each locus in your output directory.
+
+{{ codestart }}
+anvi-export-locus -c %(contigs-db)s \
+                  --gene-caller-ids 1 \
+                  -n 5,5 \
+                  -o my_locus \
+                  -O my_locus \
+                  --export-genbank
+{{ codestop }}
+
 ### Additional Options
 
 You can also remove partial hits, ignore reverse complement hits, or overwrite all files in a pre-existing output.
