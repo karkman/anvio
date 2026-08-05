@@ -58,7 +58,14 @@ The output is a TAB-delimited file containing the following columns:
 4. `upstream_similarity`: Jaccard similarity of the upstream flanking regions (5' end).
 5. `downstream_similarity`: Jaccard similarity of the downstream flanking regions (3' end).
 6. `combined_flank_similarity`: Jaccard similarity of the concatenated upstream and downstream flanking regions.
-7. `annotation`: The name of the functional group (or "All" if no annotation grouping was used).
+7. `annotation_1`: Functional annotations for the first gene.
+8. `annotation_2`: Functional annotations for the second gene.
+
+### Annotation columns
+
+- When using `--compare-by-annotation-source`, only the specified source(s) are shown.
+- When NOT using `--compare-by-annotation-source`, annotations from **all available sources** in the database are fetched and displayed in the format: `SOURCE1: annotation | SOURCE2: annotation | ...`
+- If a gene has no annotations, the column will be empty.
 
 ## Notes
 

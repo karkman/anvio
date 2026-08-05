@@ -110,13 +110,13 @@ def minhash_jaccard(sketch1, sketch2):
 def worker(pairs):
     """Worker function to compute similarities for a given list of gene pairs.
 
-    Each pair is a tuple (gid1, gid2, group_name).
+    Each pair is a tuple (gid1, gid2, ann1, ann2).
     Returns a list of result tuples.
     """
     results = []
-    global min_similarity_global, kmer_size_global
+    global gene_data_global, min_similarity_global, kmer_size_global
 
-    for gid1, gid2, group_name in pairs:
+    for gid1, gid2, ann1, ann2 in pairs:
         data1 = gene_data_global[gid1]
         data2 = gene_data_global[gid2]
 
@@ -130,9 +130,9 @@ def worker(pairs):
             up_sim = jaccard_similarity_sets(data1['upstream_kmers'], data2['upstream_kmers'])
             down_sim = jaccard_similarity_sets(data1['downstream_kmers'], data2['downstream_kmers'])
             comb_sim = jaccard_similarity_sets(data1['combined_kmers'], data2['combined_kmers'])
-            results.append((gid1, gid2, gene_sim, up_sim, down_sim, comb_sim, group_name))
+            results.append((gid1, gid2, gene_sim, up_sim, down_sim, comb_sim, ann1, ann2))
         else:
-            results.append((gid1, gid2, None, None, None, None, group_name))
+            results.append((gid1, gid2, None, None, None, None, ann1, ann2))
 
     return results
 
@@ -160,8 +160,7 @@ def main():
         available_sources = c.a_meta.get('gene_function_sources', [])
         if args.list_annotation_sources:
             run.warning('', 'ANNOTATION SOURCES FOUND', lc='yellow')
-            for s in available_sources:
-                run.info_single(s)
+            for s in available_sources: run.info_single(s)
             sys.exit(0)
 
         if annotation_source:
@@ -171,8 +170,7 @@ def main():
                     raise ConfigError(f"Annotation source '{s}' not found in this database. "
                                       f"Available sources are: {', '.join(available_sources)}")
 
-        if not output_path:
-            raise ConfigError("Missing output file path.")
+        if not output_path: raise ConfigError("Missing output file path.")
 
         # Require at least one comparison mode
         if not any([annotation_source, args.gene_caller_ids]):
@@ -195,6 +193,7 @@ def main():
 
         # --- STEP 1: INITIAL GROUPING ---
         gene_groups = []
+        gene_annotations = {}  # Map gene_id -> annotation string
         # Standard anvi'o strings for hypothetical proteins
         hypothetical_terms = ["hypothetical", "hypothetical protein", "conserved hypothetical",
                               "conserved hypotheticals", "Conserved hypothetical protein"]
@@ -217,6 +216,9 @@ def main():
                     skipped_genes += 1
                     continue
 
+                # Store the original annotation for this gene
+                gene_annotations[gid] = fn
+
                 # If the function is any kind of hypothetical, pool them all into one group
                 if any(term.lower() in fn.lower() for term in hypothetical_terms):
                     fn = "Hypothetical"
@@ -232,9 +234,23 @@ def main():
             total_possible_pairs = sum(len(g) * (len(g) - 1) // 2 for _, g in gene_groups)
             run.info("Functional categories identified", f"{len(gene_groups)} (covering {total_possible_pairs:,} total potential pairs)")
         else:
-            # No annotation source: compare the provided gene IDs as one group
+            # No annotation source: compare the provided gene IDs as one group, but still fetch annotations from all available sources
             gene_groups = [("All", gene_ids)]
             total_possible_pairs = len(gene_ids) * (len(gene_ids) - 1) // 2
+
+            # Fetch annotations from ALL available sources and combine them
+            available_sources = c.a_meta.get('gene_function_sources', [])
+            if available_sources:
+                run.info("Fetching annotations from all available sources", ', '.join(available_sources))
+                for gid in gene_ids:
+                    annotations = []
+                    for source in available_sources:
+                        res = c.gene_function_calls_dict.get(gid, {}).get(source)
+                        if res and res[1]:
+                            annotations.append(f"{source}: {res[1]}")
+                    gene_annotations[gid] = " | ".join(annotations) if annotations else ""
+            else:
+                gene_annotations = {gid: "" for gid in gene_ids}
 
         # --- STEP 2: CACHE LOOKUP ---
         gene_data = {}
@@ -283,42 +299,27 @@ def main():
                         g, f = seqs_raw[gid]['sequence'], full_raw[gid]['sequence']
                         idx = f.find(g)
                         up, down = (f[:idx], f[idx + len(g):]) if idx != -1 else ("", "")
-                        gene_kmers = get_kmers_packed(g, kmer_size)
-                        upstream_kmers = get_kmers_packed(up, kmer_size)
-                        downstream_kmers = get_kmers_packed(down, kmer_size)
-                        combined_kmers = get_kmers_packed(up + down, kmer_size)
-                        data = {
-                            'gene_kmers': gene_kmers,
-                            'upstream_kmers': upstream_kmers,
-                            'downstream_kmers': downstream_kmers,
-                            'combined_kmers': combined_kmers,
-                            'upstream_seq': up,
-                            'downstream_seq': down,
-                            'combined_seq': up + down,
-                            'sketch': get_minhash_sketch(gene_kmers),
-                        }
+                        kmers = get_kmers_packed(g, kmer_size)
+                        data = {'gene_kmers': kmers, 'upstream_seq': up, 'downstream_seq': down, 'combined_seq': up + down, 'sketch': get_minhash_sketch(kmers)}
                         gene_data[gid] = data
-                        if cache_file:
-                            new_data_to_cache.append((gid, pickle.dumps(data)))
+                        if cache_file: new_data_to_cache.append((gid, pickle.dumps(data)))
                         progress.increment()
             finally:
                 anvio.QUIET, c.run.verbose = old_quiet, old_verbose
             progress.end()
             if cache_file and new_data_to_cache:
-                cache_cursor.executemany("INSERT INTO kmers VALUES (?, ?)", new_data_to_cache)
-                cache_conn.commit()
-        if cache_file:
-            cache_conn.close()
+                cursor.executemany("INSERT INTO kmers VALUES (?, ?)", new_data_to_cache)
+                conn.commit()
+        if cache_file: conn.close()
 
         # --- STEP 4: FINAL COMPARISON & WRITING ---
         clusters_graph = None
         if args.cluster_results:
             import networkx as nx
-            clusters_graph = nx.Graph()
-            clusters_graph.add_nodes_from(gene_ids)
+            clusters_graph = nx.Graph(); clusters_graph.add_nodes_from(gene_ids)
 
         with open(output_path, 'w') as outf:
-            outf.write("gene_callers_id_1\tgene_callers_id_2\tgene_similarity\tupstream_similarity\tdownstream_similarity\tcombined_flank_similarity\tannotation\n")
+            outf.write("gene_callers_id_1\tgene_callers_id_2\tgene_similarity\tupstream_similarity\tdownstream_similarity\tcombined_flank_similarity\tannotation_1\tannotation_2\n")
             progress.new('Computing final similarities', progress_total_items=total_possible_pairs)
             pool = multiprocessing.Pool(processes=num_threads, initializer=init_worker, initargs=(gene_data, args.min_similarity, kmer_size))
             count, start_t, last_u = 0, time.time(), time.time()
@@ -328,26 +329,26 @@ def main():
                     pairs = []
                     for i in range(len(group)):
                         for j in range(i + 1, len(group)):
-                            pairs.append((group[i], group[j], name))
+                            ann1 = gene_annotations.get(group[i], "")
+                            ann2 = gene_annotations.get(group[j], "")
+                            pairs.append((group[i], group[j], ann1, ann2))
                     yield pairs
 
             it = pool.imap_unordered(worker, pair_gen())
 
             for results_list in it:
-                for gid1, gid2, g_s, u_s, d_s, c_s, group_name in results_list:
+                for gid1, gid2, g_s, u_s, d_s, c_s, ann1, ann2 in results_list:
                     count += 1
                     if g_s is not None:
-                        outf.write(f"{gid1}\t{gid2}\t{g_s:.6f}\t{u_s:.6f}\t{d_s:.6f}\t{c_s:.6f}\t{group_name}\n")
-                        if clusters_graph is not None and g_s >= args.clustering_similarity_threshold:
-                            clusters_graph.add_edge(gid1, gid2)
+                        outf.write(f"{gid1}\t{gid2}\t{g_s:.6f}\t{u_s:.6f}\t{d_s:.6f}\t{c_s:.6f}\t{ann1}\t{ann2}\n")
+                        if clusters_graph is not None and g_s >= args.clustering_similarity_threshold: clusters_graph.add_edge(gid1, gid2)
                     if count % 1000 == 0 or time.time() - last_u >= 5.0:
                         progress.increment(increment_to=count)
                         rate = count / (time.time() - start_t) if time.time() > start_t else 0
                         progress.update(f'Compared {count:,} pairs - {rate:6.0f} pairs/sec')
                         last_u = time.time()
             progress.end()
-            pool.close()
-            pool.join()
+            pool.close(); pool.join()
 
         if clusters_graph is not None:
             clusters = list(nx.connected_components(clusters_graph))
@@ -355,18 +356,14 @@ def main():
             with open(c_out, 'w') as f:
                 f.write("gene_caller_id\tcluster_id\n")
                 for i, cl in enumerate(clusters):
-                    for g in sorted(list(cl)):
-                        f.write(f"{g}\t{i}\n")
+                    for g in sorted(list(cl)): f.write(f"{g}\t{i}\n")
             run.info("Clustering completed", c_out)
         run.info('Comparison completed', output_path)
 
     except Exception as e:
         progress.end()
-        if anvio.DEBUG:
-            raise
-        run.warning(f"Error: {e}")
-        sys.exit(-1)
-
+        if anvio.DEBUG: raise
+        run.warning(f"Error: {e}"); sys.exit(-1)
 
 def get_args():
     from anvio.argparse import ArgumentParser
@@ -384,7 +381,6 @@ def get_args():
     p.add_argument('--cluster-results', action='store_true')
     p.add_argument('--clustering-similarity-threshold', type=float, default=0.98)
     return p.get_args(p)
-
 
 if __name__ == '__main__':
     main()
