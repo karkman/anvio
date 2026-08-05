@@ -299,8 +299,17 @@ def main():
                         g, f = seqs_raw[gid]['sequence'], full_raw[gid]['sequence']
                         idx = f.find(g)
                         up, down = (f[:idx], f[idx + len(g):]) if idx != -1 else ("", "")
-                        kmers = get_kmers_packed(g, kmer_size)
-                        data = {'gene_kmers': kmers, 'upstream_seq': up, 'downstream_seq': down, 'combined_seq': up + down, 'sketch': get_minhash_sketch(kmers)}
+                        gene_kmers = get_kmers_packed(g, kmer_size)
+                        upstream_kmers = get_kmers_packed(up, kmer_size)
+                        downstream_kmers = get_kmers_packed(down, kmer_size)
+                        combined_kmers = get_kmers_packed(up + down, kmer_size)
+                        data = {
+                            'gene_kmers': gene_kmers,
+                            'upstream_kmers': upstream_kmers,
+                            'downstream_kmers': downstream_kmers,
+                            'combined_kmers': combined_kmers,
+                            'sketch': get_minhash_sketch(gene_kmers)
+                        }
                         gene_data[gid] = data
                         if cache_file: new_data_to_cache.append((gid, pickle.dumps(data)))
                         progress.increment()
@@ -308,9 +317,9 @@ def main():
                 anvio.QUIET, c.run.verbose = old_quiet, old_verbose
             progress.end()
             if cache_file and new_data_to_cache:
-                cursor.executemany("INSERT INTO kmers VALUES (?, ?)", new_data_to_cache)
-                conn.commit()
-        if cache_file: conn.close()
+                cache_cursor.executemany("INSERT INTO kmers VALUES (?, ?)", new_data_to_cache)
+                cache_conn.commit()
+        if cache_file: cache_conn.close()
 
         # --- STEP 4: FINAL COMPARISON & WRITING ---
         clusters_graph = None
