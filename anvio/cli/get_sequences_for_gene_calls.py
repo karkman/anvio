@@ -98,7 +98,7 @@ def export_from_contigs(args):
         if args.export_genbank:
             # Export as GenBank file
             from anvio.contigops import ExportGenbank
-            exporter = ExportGenbank(args)
+            exporter = ExportGenbank(args, gene_caller_ids=gene_caller_ids)
             exporter.export()
         else:
             c.get_sequences_for_gene_callers_ids(**func_kwargs, report_aa_sequences=args.get_aa_sequences, flank_length=args.flank_length,
