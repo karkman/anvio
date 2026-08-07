@@ -3,7 +3,6 @@
    contig data such as GenbankToAnvio."""
 
 import os
-import re
 import io
 import gzip
 import numpy as np
@@ -11,6 +10,9 @@ import string
 import argparse
 
 from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio.SeqFeature import SeqFeature, FeatureLocation
 from collections import OrderedDict
 
 import anvio
@@ -782,7 +784,7 @@ class GenbankToAnvio:
                                      "to not report them. FINE. They shall be ignored.", nl_after=1)
                 break
 
-        # The main loop to go through all records forreals.
+            # The main loop to go through all records forreals.
         for genbank_record in self.get_genbank_file_object():
             if genbank_record.name in output_fasta:
                 raise ConfigError("Anvi'o is not able to convert this GenBank file because it contains sequences with identical "
@@ -791,51 +793,47 @@ class GenbankToAnvio:
                 num_genbank_records_processed += 1
                 output_fasta[genbank_record.name] = str(genbank_record.seq)
 
-            genes = [gene for gene in genbank_record.features if gene.type =="CDS"] # focusing on features annotated as "CDS" by NCBI's PGAP
+            # Process specific features only
+            target_types = ['CDS', 'tRNA', 'rRNA']
+            for gene in genbank_record.features:
+                if gene.type not in target_types:
+                    continue
 
-            for gene in genes:
                 num_genes_found += 1
                 location = str(gene.location)
-                # "join" in `location` means that the gene call spans multiple contigs
-                # so we exclude it here:
+
+                # Exclude genes spanning multiple contigs
                 if 'join' in location:
                     num_genes_excluded += 1
-                    if 'protein_id' in gene.qualifiers:
-                        genes_excluded.add(gene.qualifiers['protein_id'][0])
-
                     continue
 
-                if "note" in gene.qualifiers:
-                    note = str(gene.qualifiers["note"][0])
+                # Set initial call_type: 1 for CODING, 2 for NONCODING
+                call_type = constants.gene_call_types['CODING'] if gene.type == 'CDS' else constants.gene_call_types['NONCODING']
 
-                    # dumping gene if noted as any of these in the "note" section set above
-                    if any(exclusion_term in note for exclusion_term in self.note_terms_to_exclude):
-                        continue
+                # Handle exceptions and pseudogenes for CDS features. If a CDS is marked as a pseudogene
+                # or contains internal stop codons/frameshifts, we degrade it to NONCODING to preserve
+                # it in the database without triggering translation errors.
+                if call_type == constants.gene_call_types['CODING']:
+                    is_pseudo = "pseudo" in gene.qualifiers or "pseudogene" in gene.qualifiers
+                    if is_pseudo:
+                        call_type = constants.gene_call_types['NONCODING']
+                    elif "note" in gene.qualifiers:
+                        note = str(gene.qualifiers["note"][0])
+                        if any(term in note for term in self.note_terms_to_exclude):
+                            call_type = constants.gene_call_types['NONCODING']
 
-                # counting genes with translational exceptions (e.g., selenocysteine
-                # or pyrrolysine) so we can warn the user about them later
-                if "transl_except" in gene.qualifiers:
-                    num_genes_with_transl_except += 1
-
-                # dumping if gene declared a pseudogene
-                if "pseudo" in gene.qualifiers or "pseudogene" in gene.qualifiers:
-                    continue
-
-                # The character "<" or ">" in `location `means the gene call runs off a contig, so it
-                # is best to mark it as impartial:
-                if ('<' in location or '>' in location):
+                # Identify partial features using Biopython's location object.
+                # If either the start or end is not an 'ExactPosition', it's partial.
+                from Bio.SeqFeature import ExactPosition
+                if not isinstance(gene.location.start, ExactPosition) or not isinstance(gene.location.end, ExactPosition):
                     partial = 1
                     num_partial_genes += 1
                 else:
                     partial = 0
 
-                # cleaning up gene coordinates to more easily parse:
-                location = location.replace("[", "").replace('>', '').replace('<', '')
-                location = re.sub('](.*)', '', location)
-                location = location.split(":")
-
-                start = location[0] # start coordinate
-                end = location[1] # end coordinate
+                # Correct coordinate parsing using Biopython's location object
+                start = int(gene.location.start)
+                end = int(gene.location.end)
 
                 # setting direction to "f" or "r":
                 if gene.location.strand == 1:
@@ -854,48 +852,68 @@ class GenbankToAnvio:
                 # storing gene product annotation if present
                 if "product" in gene.qualifiers:
                     function = gene.qualifiers["product"][0]
-                    # trying to capture all different ways proteins are listed as hypothetical and
-                    # setting to same thing so can prevent from adding to output functions table below
                     if function in ["hypothetical", "hypothetical protein", "conserved hypothetical",
                                     "conserved hypotheticals", "Conserved hypothetical protein"]:
                         function = None
                 else:
                     function = None
 
-                # if present, adding gene name to product annotation (so long as not a hypothetical,
-                # sometimes these names are useful, sometimes they are not):
+                # if present, adding gene name to product annotation
                 if "gene" in gene.qualifiers:
                     if function:
                         gene_name=str(gene.qualifiers["gene"][0])
                         function = function + " (" + gene_name + ")"
+
+                # Determine the source for the gene call itself. To match anvi'o's visual
+                # coloring conventions, we use canonical sources for tRNA and rRNA.
+                if gene.type == 'tRNA':
+                    gene_call_source = 'Transfer_RNAs'
+                elif gene.type == 'rRNA':
+                    gene_call_source = 'Ribosomal_RNAs'
+                else:
+                    gene_call_source = self.source
 
                 output_gene_calls[self.gene_callers_id] = {'contig': genbank_record.name,
                                                            'start': start,
                                                            'stop': end,
                                                            'direction': direction,
                                                            'partial': partial,
-                                                           'call_type': 1,
-                                                           'source': self.source,
+                                                           'call_type': call_type,
+                                                           'source': gene_call_source,
                                                            'version': self.version}
 
-                # let's keep the amino acid sequences if present
-                if aa_sequences_present:
+                # let's keep the amino acid sequences if present (only for CDS)
+                if aa_sequences_present and call_type == constants.gene_call_types['CODING']:
                     if 'translation' in gene.qualifiers and not partial:
                         output_gene_calls[self.gene_callers_id]['aa_sequence'] = gene.qualifiers["translation"][0]
                         num_genes_with_AA_sequences += 1
                     else:
                         output_gene_calls[self.gene_callers_id]['aa_sequence'] = ''
+                elif call_type != constants.gene_call_types['CODING']:
+                    output_gene_calls[self.gene_callers_id]['aa_sequence'] = ''
 
                 num_genes_reported += 1
 
-                # not writing gene out to functions table if no annotation
-                if function:
-                    output_functions.append({'gene_callers_id': self.gene_callers_id,
-                                             'source': self.source,
-                                             'accession': accession,
-                                             'function': function,
-                                             'e_value': 0})
-                    num_genes_with_functions += 1
+                # Determine functional source for features to match anvi'o coloring behavior
+                # for non-coding genes (tRNA/rRNA)
+                if gene.type == 'tRNA':
+                    functional_source = 'Transfer_RNAs'
+                elif gene.type == 'rRNA':
+                    functional_source = 'Ribosomal_RNAs'
+                else:
+                    functional_source = self.source
+
+                # If no product was found, use the gene type as the functional annotation
+                if not function:
+                    function = gene.type
+
+                # Write functional annotation
+                output_functions.append({'gene_callers_id': self.gene_callers_id,
+                                         'source': functional_source,
+                                         'accession': accession,
+                                         'function': function,
+                                         'e_value': 0})
+                num_genes_with_functions += 1
 
                 if self.include_locus_tags_as_functions and "locus_tag" in gene.qualifiers:
                     locus_tag = gene.qualifiers["locus_tag"][0]
@@ -1002,3 +1020,115 @@ class GenbankToAnvio:
         return {'external_gene_calls': self.output_gene_calls_path,
                 'gene_functional_annotation': self.output_functions_path,
                 'path': self.output_fasta_path}
+
+class ExportGenbank:
+    """A class to export contigs and their features from an anvi'o contigs database as a GenBank file."""
+
+    def __init__(self, args, contigs_superclass=None, run=None, progress=None):
+        self.args = args
+        self.run = run if run else terminal.Run()
+        self.progress = progress if progress else terminal.Progress()
+
+        A = lambda x: self.args.__dict__[x] if x in self.args.__dict__ else None
+        self.output_file_path = A('output_file') or A('output_genbank')
+        
+        self.annotation_sources = A('annotation_sources')
+        if self.annotation_sources and isinstance(self.annotation_sources, str):
+            self.annotation_sources = [s.strip() for s in self.annotation_sources.split(',')]
+
+        if contigs_superclass:
+            self.c = contigs_superclass
+        else:
+            from anvio.dbops import ContigsSuperclass
+            self.c = ContigsSuperclass(args, r=self.run, p=self.progress)
+
+
+    def export(self):
+        # Initialize contig sequences if not already done
+        if not self.c.contig_sequences:
+            self.c.init_contig_sequences()
+
+        if not self.c.contig_sequences:
+            raise ConfigError("No contig sequences were loaded from the database :/")
+
+        self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
+        
+        # Initialize functions for all genes of interest
+        self.c.init_functions(requested_sources=self.annotation_sources)
+        
+        # Get amino acid sequences if available
+        gene_ids = list(self.c.genes_in_contigs_dict.keys())
+        aa_sequences = self.c.get_gene_amino_acid_sequence(gene_ids)
+
+        records = []
+        for contig_name in sorted(list(self.c.contig_sequences.keys())):
+            sequence_data = self.c.contig_sequences[contig_name]
+            sequence_string = sequence_data['sequence']
+            
+            self.progress.update(f'Processing {contig_name} ...')
+            
+            # Create Seq object and SeqRecord
+            seq_obj = Seq(sequence_string)
+            record = SeqRecord(seq_obj, id=contig_name, name=contig_name[:16], description="")
+            record.annotations["molecule_type"] = "DNA"
+            
+            if contig_name in self.c.contig_name_to_genes:
+                # Sort genes by start position
+                genes = sorted(list(self.c.contig_name_to_genes[contig_name]), key=lambda x: x[1])
+                for gene_caller_id, start, stop in genes:
+                    gene_info = self.c.genes_in_contigs_dict[gene_caller_id]
+                    
+                    strand = 1 if gene_info['direction'] == 'f' else -1
+                    # anvi'o uses 0-based indexing. Biopython FeatureLocation also uses 0-based.
+                    location = FeatureLocation(start, stop, strand=strand)
+                    
+                    # Map call_type back to GenBank feature types
+                    source = gene_info['source']
+                    if source == 'Transfer_RNAs':
+                        feature_type = 'tRNA'
+                    elif source == 'Ribosomal_RNAs':
+                        feature_type = 'rRNA'
+                    elif gene_info['call_type'] == constants.gene_call_types['CODING']:
+                        feature_type = 'CDS'
+                    else:
+                        feature_type = 'misc_feature'
+                    
+                    qualifiers = OrderedDict()
+                    qualifiers['locus_tag'] = [f"gene_{gene_caller_id}"]
+                    qualifiers['gene_callers_id'] = [str(gene_caller_id)]
+                    
+                    # Add functional annotations
+                    if gene_caller_id in self.c.gene_function_calls_dict:
+                        for src, hits in self.c.gene_function_calls_dict[gene_caller_id].items():
+                            # hits is (accession, function, e_value)
+                            if hits:
+                                qualifiers[f'note_{src}'] = [f"{hits[0]}: {hits[1]}"]
+                                if 'product' not in qualifiers:
+                                    qualifiers['product'] = [hits[1]]
+                                if 'db_xref' not in qualifiers:
+                                    qualifiers['db_xref'] = []
+                                qualifiers['db_xref'].append(f"{src}:{hits[0]}")
+
+                    # Add amino acid sequence if it's a CDS and we have it
+                    if feature_type == 'CDS' and gene_caller_id in aa_sequences:
+                        aa_seq = aa_sequences[gene_caller_id]
+                        if aa_seq:
+                            qualifiers['translation'] = [aa_seq]
+
+                    feature = SeqFeature(location, type=feature_type, qualifiers=qualifiers)
+                    record.features.append(feature)
+            
+            records.append(record)
+            self.progress.increment()
+            
+        self.progress.end()
+        
+        # Add metadata to records if possible (e.g. project name)
+        project_name = self.c.a_meta.get('project_name', 'anvio_export')
+        for record in records:
+            record.annotations["source"] = project_name
+            record.annotations["data_file_division"] = "BCT" # default to Bacteria
+
+        self.run.info('Writing GenBank file', self.output_file_path)
+        with open(self.output_file_path, "w") as output_handle:
+            SeqIO.write(records, output_handle, "genbank")

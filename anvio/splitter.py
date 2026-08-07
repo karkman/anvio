@@ -25,6 +25,7 @@ import anvio.filesnpaths as filesnpaths
 import anvio.ccollections as ccollections
 import anvio.auxiliarydataops as auxiliarydataops
 
+from anvio.contigops import ExportGenbank
 from anvio.errors import ConfigError
 from anvio.tables.views import TablesForViews
 from anvio.tables.kmers import KMerTablesForContigsAndSplits
@@ -752,6 +753,7 @@ class LocusSplitter:
         self.reverse_complement_if_necessary = not A('never_reverse_complement')
         self.include_fasta_output = A('include_fasta_output') or True
         self.is_in_flank_mode = bool(A('flank_mode'))
+        self.export_genbank = A('export_genbank')
 
         if A('list_hmm_sources'):
             dbops.ContigsDatabase(self.input_contigs_db_path).list_available_hmm_sources()
@@ -1318,6 +1320,15 @@ class LocusSplitter:
 
         locus_db.insert_many(t.hmm_hits_splits_table_name, entries)
         locus_db.disconnect()
+
+        # if the user requested a genbank file for the locus
+        if self.export_genbank:
+            locus_genbank_path = E(".gbk")
+            args_genbank = argparse.Namespace(contigs_db=locus_output_db_path,
+                                              output_file=locus_genbank_path,
+                                              annotation_sources=self.annotation_sources)
+            ExportGenbank(args_genbank, run=self.run_object, progress=self.progress_object).export()
+            self.run.info("Output GenBank file", locus_genbank_path)
 
         ############################################################################################
         # REMOVE TEMP FILES
