@@ -1024,7 +1024,7 @@ class GenbankToAnvio:
 class ExportGenbank:
     """A class to export contigs and their features from an anvi'o contigs database as a GenBank file."""
 
-    def __init__(self, args, contigs_superclass=None, run=None, progress=None):
+    def __init__(self, args, contigs_superclass=None, run=None, progress=None, gene_caller_ids=None):
         self.args = args
         self.run = run if run else terminal.Run()
         self.progress = progress if progress else terminal.Progress()
@@ -1032,13 +1032,20 @@ class ExportGenbank:
         A = lambda x: self.args.__dict__[x] if x in self.args.__dict__ else None
         self.output_file_path = A('output_file') or A('output_genbank')
 
-        # Handle gene caller IDs filter for genebank export
-        self.gene_caller_ids = A('gene_caller_ids')
-        if self.gene_caller_ids:
-            if isinstance(self.gene_caller_ids, str):
-                self.gene_caller_ids = [int(x) for x in self.gene_caller_ids.split(':') if x]
+        # Handle gene caller IDs filter for genbank export. The CLI
+        # (anvi-get-sequences-for-gene-calls) already parses --gene-caller-ids via
+        # anvi.utils.get_gene_caller_ids_from_args and passes the resulting list here. If we only
+        # have the raw string (e.g. a path to a file of IDs, or a delimiter-separated string),
+        # reuse that same parser rather than splitting/converting it ourselves -- the raw value may
+        # contain path separators or other non-numeric characters.
+        self.gene_caller_ids = gene_caller_ids
+        if self.gene_caller_ids is None:
+            raw_gene_caller_ids = A('gene_caller_ids')
+            if raw_gene_caller_ids:
+                delimiter = A('delimiter') or ','
+                self.gene_caller_ids = list(utils.get_gene_caller_ids_from_args(raw_gene_caller_ids, delimiter))
             else:
-                self.gene_caller_ids = list(self.gene_caller_ids)
+                self.gene_caller_ids = None
 
         self.annotation_sources = A('annotation_sources')
         if self.annotation_sources and isinstance(self.annotation_sources, str):
