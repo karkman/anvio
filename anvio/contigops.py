@@ -1031,7 +1031,15 @@ class ExportGenbank:
 
         A = lambda x: self.args.__dict__[x] if x in self.args.__dict__ else None
         self.output_file_path = A('output_file') or A('output_genbank')
-        
+
+        # Handle gene caller IDs filter for genebank export
+        self.gene_caller_ids = A('gene_caller_ids')
+        if self.gene_caller_ids:
+            if isinstance(self.gene_caller_ids, str):
+                self.gene_caller_ids = [int(x) for x in self.gene_caller_ids.split(':') if x]
+            else:
+                self.gene_caller_ids = list(self.gene_caller_ids)
+
         self.annotation_sources = A('annotation_sources')
         if self.annotation_sources and isinstance(self.annotation_sources, str):
             self.annotation_sources = [s.strip() for s in self.annotation_sources.split(',')]
@@ -1052,12 +1060,17 @@ class ExportGenbank:
             raise ConfigError("No contig sequences were loaded from the database :/")
 
         self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
-        
+
         # Initialize functions for all genes of interest
         self.c.init_functions(requested_sources=self.annotation_sources)
-        
+
+        # Filter genes if gene caller IDs are specified
+        if hasattr(self, 'gene_caller_ids') and self.gene_caller_ids:
+            gene_ids = [gid for gid in self.c.genes_in_contigs_dict.keys() if gid in self.gene_caller_ids]
+        else:
+            gene_ids = list(self.c.genes_in_contigs_dict.keys())
+
         # Get amino acid sequences if available
-        gene_ids = list(self.c.genes_in_contigs_dict.keys())
         aa_sequences = self.c.get_gene_amino_acid_sequence(gene_ids)
 
         records = []

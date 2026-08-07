@@ -10,6 +10,7 @@ import anvio.terminal as terminal
 import anvio.filesnpaths as filesnpaths
 
 from anvio.errors import ConfigError, FilesNPathsError
+from anvio.contigops import ExportGenbank
 
 
 __copyright__ = "Copyleft 2015-2024, The Anvi'o Project (http://anvio.org/)"
@@ -27,22 +28,35 @@ def main():
     run = terminal.Run()
 
     try:
-        if args.contigs_of_interest:
-            filesnpaths.is_file_tab_delimited(args.contigs_of_interest, expected_number_of_fields=1)
-            seq_names_to_export = [line.strip() for line in open(args.contigs_of_interest).readlines()]
+        if args.export_genbank:
+            if args.splits_mode:
+                raise ConfigError("GenBank export is only supported for contigs, not splits :/ Please remove the --splits-mode flag.")
+
+            if args.contigs_of_interest:
+                raise ConfigError("The --contigs-of-interest flag is not compatible with GenBank export :/")
+
+            exporter = ExportGenbank(args)
+            exporter.export()
+
+            run.info('Export mode', 'contigs')
+            run.info('Output GenBank', args.output_file)
         else:
-            seq_names_to_export = None
+            if args.contigs_of_interest:
+                filesnpaths.is_file_tab_delimited(args.contigs_of_interest, expected_number_of_fields=1)
+                seq_names_to_export = [line.strip() for line in open(args.contigs_of_interest).readlines()]
+            else:
+                seq_names_to_export = None
 
-        utils.export_sequences_from_contigs_db(args.contigs_db,
-                                               args.output_file,
-                                               seq_names_to_export=seq_names_to_export,
-                                               splits_mode=args.splits_mode,
-                                               just_do_it=args.just_do_it,
-                                               truncate=(not args.no_wrap),
-                                               run=run)
+            utils.export_sequences_from_contigs_db(args.contigs_db,
+                                                   args.output_file,
+                                                   seq_names_to_export=seq_names_to_export,
+                                                   splits_mode=args.splits_mode,
+                                                   just_do_it=args.just_do_it,
+                                                   truncate=(not args.no_wrap),
+                                                   run=run)
 
-        run.info('Export mode', 'splits' if args.splits_mode else 'contigs')
-        run.info('Output FASTA', args.output_file)
+            run.info('Export mode', 'splits' if args.splits_mode else 'contigs')
+            run.info('Output FASTA', args.output_file)
     except ConfigError as e:
         print(e)
         sys.exit(-1)
@@ -58,6 +72,7 @@ def get_args():
     parser.add_argument(*anvio.A('contigs-of-interest'), **anvio.K('contigs-of-interest'))
     parser.add_argument('--splits-mode', default=False, action="store_true", help="Export split\
                         sequences instead.")
+    parser.add_argument(*anvio.A('export-genbank'), **anvio.K('export-genbank'))
     parser.add_argument(*anvio.A('output-file'), **anvio.K('output-file', {'required': True}))
     parser.add_argument(*anvio.A('just-do-it'), **anvio.K('just-do-it'))
     parser.add_argument(*anvio.A('no-wrap'), **anvio.K('no-wrap'))
