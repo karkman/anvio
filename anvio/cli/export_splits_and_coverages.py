@@ -9,6 +9,7 @@ via available parsers in anvi-populate-collections table."""
 
 import os
 import sys
+import argparse
 from anvio.argparse import ArgumentParser
 
 import anvio
@@ -18,6 +19,7 @@ import anvio.terminal as terminal
 import anvio.filesnpaths as filesnpaths
 
 from anvio.errors import ConfigError, FilesNPathsError
+from anvio.contigops import ExportGenbank
 
 
 __copyright__ = "Copyleft 2015-2024, The Anvi'o Project (http://anvio.org/)"
@@ -57,7 +59,6 @@ def main():
         run.info('Report contigs and not splits', args.report_contigs)
 
         coverages_output = os.path.join(args.output_dir, args.output_file_prefix + '-COVs.txt')
-        sequences_output = os.path.join(args.output_dir, args.output_file_prefix + ('-CONTIGS.fa' if args.report_contigs else '-SPLITS.fa'))
 
         progress.new('Bleep bloop')
 
@@ -65,14 +66,35 @@ def main():
         coverages = profile_db.get_split_coverages_dict(use_Q2Q3_coverages=args.use_Q2Q3_coverages, splits_mode=args.splits_mode, report_contigs=args.report_contigs)
         utils.store_dict_as_TAB_delimited_file(coverages, coverages_output, ['contig'] + sorted(list(samples)))
 
-        progress.update('Dealing with sequences...')
-        progress.update('Gathering coverage data')
-        utils.export_sequences_from_contigs_db(args.contigs_db, sequences_output, seq_names_to_export=sorted(list(coverages.keys())), splits_mode=(not args.report_contigs))
+        if args.export_genbank:
+            if args.splits_mode:
+                raise ConfigError("GenBank export is only supported for contigs, not splits :/ Please remove the --splits-mode flag.")
+            if not args.report_contigs:
+                raise ConfigError("The coverage table is written per-contig only when --report-contigs is used, which is required for GenBank export. Please add the --report-contigs flag :/")
 
-        progress.end()
+            sequences_output = os.path.join(args.output_dir, args.output_file_prefix + '-CONTIGS.gbk')
 
-        run.info('Coverages file', coverages_output, mc="green", nl_before=1)
-        run.info('Sequences file', sequences_output, mc="green")
+            progress.update('Exporting to GenBank...')
+            progress.update('Gathering coverage data')
+            export_args = argparse.Namespace(contigs_db=args.contigs_db, output_file=sequences_output, annotation_sources=None)
+            exporter = ExportGenbank(export_args)
+            exporter.export()
+
+            progress.end()
+
+            run.info('Coverages file', coverages_output, mc="green", nl_before=1)
+            run.info('GenBank file', sequences_output, mc="green")
+        else:
+            sequences_output = os.path.join(args.output_dir, args.output_file_prefix + ('-CONTIGS.fa' if args.report_contigs else '-SPLITS.fa'))
+
+            progress.update('Dealing with sequences...')
+            progress.update('Gathering coverage data')
+            utils.export_sequences_from_contigs_db(args.contigs_db, sequences_output, seq_names_to_export=sorted(list(coverages.keys())), splits_mode=(not args.report_contigs))
+
+            progress.end()
+
+            run.info('Coverages file', coverages_output, mc="green", nl_before=1)
+            run.info('Sequences file', sequences_output, mc="green")
     except ConfigError as e:
         print(e)
         sys.exit(-1)
@@ -92,6 +114,7 @@ def get_args():
     parser.add_argument('--report-contigs', default=False, action="store_true", help="By default this program reports \
                          sequences and their coverages for 'splits'. By using this flag, you can report contig sequences\
                          and coverages instead. For obvious reasons, you can't use this flag with `--splits-mode` flag.")
+    parser.add_argument(*anvio.A('export-genbank'), **anvio.K('export-genbank'))
     parser.add_argument('--use-Q2Q3-coverages', default=False, action="store_true", help="By default this program reports the mean \
                          coverage of a split (or contig, see --report-contigs) for each sample. By using this flag, \
                          you can report the mean Q2Q3 coverage by excluding 25 percent of the nucleotide positions with the \

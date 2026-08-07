@@ -95,9 +95,15 @@ def export_from_contigs(args):
     else:
         if args.annotation_source:
             raise ConfigError("A functional annotation source is only relevant for the GFF output format.")
-        c.get_sequences_for_gene_callers_ids(**func_kwargs, report_aa_sequences=args.get_aa_sequences, flank_length=args.flank_length,
-                                             output_file_path_external_gene_calls=args.external_gene_calls, defline_format=args.defline_format,
-                                             list_defline_variables=args.list_defline_variables)
+        if args.export_genbank:
+            # Export as GenBank file
+            from anvio.contigops import ExportGenbank
+            exporter = ExportGenbank(args)
+            exporter.export()
+        else:
+            c.get_sequences_for_gene_callers_ids(**func_kwargs, report_aa_sequences=args.get_aa_sequences, flank_length=args.flank_length,
+                                                 output_file_path_external_gene_calls=args.external_gene_calls, defline_format=args.defline_format,
+                                                 list_defline_variables=args.list_defline_variables)
 
 
 def export_from_genomes_storage(args, genomes_storage_db_path, output_file_path):
@@ -140,6 +146,7 @@ def get_args():
     groupD.add_argument(*anvio.A('wrap'), **anvio.K('wrap'))
     groupD.add_argument(*anvio.A('list-defline-variables'), **anvio.K('list-defline-variables'))
     groupD.add_argument(*anvio.A('defline-format'), **anvio.K('defline-format'))
+    groupD.add_argument('--export-genbank', **anvio.K('export-genbank', {'action': 'store_true', 'help': 'Export sequences as a GenBank file'}))
 
     groupE = parser.add_argument_group('OPTIONS COMMON TO ALL INPUTS')
     groupE.add_argument(*anvio.A('output-file'), **anvio.K('output-file', {'required': True}))
