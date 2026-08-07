@@ -1059,9 +1059,9 @@ class ExportGenbank:
         if not self.c.contig_sequences:
             raise ConfigError("No contig sequences were loaded from the database :/")
 
-        self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
-
-        # Initialize functions for all genes of interest
+        # Initialize functions for all genes of interest. This uses the same progress object as
+        # the export loop below, so it must complete BEFORE the 'Exporting to GenBank' progress
+        # bar is started (otherwise anvio raises a TerminalError about a competing progress bar).
         self.c.init_functions(requested_sources=self.annotation_sources)
 
         # Filter genes if gene caller IDs are specified
@@ -1072,6 +1072,8 @@ class ExportGenbank:
 
         # Get amino acid sequences if available
         aa_sequences = self.c.get_gene_amino_acid_sequence(gene_ids)
+
+        self.progress.new('Exporting to GenBank', progress_total_items=len(self.c.contig_sequences))
 
         records = []
         for contig_name in sorted(list(self.c.contig_sequences.keys())):
